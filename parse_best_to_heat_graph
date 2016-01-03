@@ -1,0 +1,158 @@
+#!/usr/bin/python3
+
+# TODO follow url to get info about each race
+import argparse
+from bs4 import BeautifulSoup
+from datetime import datetime
+import matplotlib.pyplot as plt
+import numpy as np
+import sys
+import re
+
+class Race:
+    def __init__(self):
+        self.country = None
+        self.city = None
+        self.type_ = None
+        self.date = None
+        self.results = []
+
+    def __str__(self):
+        return  "Race: " + str(self.__dict__)
+
+def parse_fis_soup(fis_soup, regex):
+
+    def is_race_type_ok(race):
+        if race is None:
+            return False
+        if regex is None:
+            return True
+        return re.match(regex, race.type_) is not None
+
+    curr_race = None
+    races = []
+    result_rows = [r for r in fis_soup.find_all("tr") if "Rank" not in r.text]
+    for row in result_rows:
+        for x in row.find_all("td", attrs={"align":"center"}):
+            if is_race_type_ok(curr_race):
+                races.append(curr_race)
+            curr_race = Race()
+            curr_race.type_ = x.text
+            print(x.text)
+
+        for x in row.find_all("td", attrs={"align":"left"}):
+            s = x.text.split(".")
+            try:
+                num_str, person_str = tuple(s)
+                num = int(num_str)
+                person = person_str.strip()
+                curr_race.results.append((num, person))
+            except ValueError:
+                x = s[0]
+                try:
+                    date = datetime.strptime(x, "%d-%m-%Y")
+                    curr_race.date = date
+                except ValueError:
+                    if x == x.upper():
+                        curr_race.country = x
+                    else:
+                        curr_race.city = x
+
+    if is_race_type_ok(curr_race):
+        races.append(curr_race)
+    return races
+
+def get_racers(races):
+    return set((result[1] for race in races for result in race.results))
+
+
+def get_places(races):
+    return (result[0] for race in races for result in race.results)
+    
+def compute_score(highest_possible_place, place):
+    # can be seen as penalty for not being in top group (the group of top
+    # racers listed for the race)
+    reward_for_being_top = 1
+    score = reward_for_being_top + highest_possible_place - place
+    return score
+
+def get_racer_to_total_score(races):
+    """ higher is better """
+    racer_to_total_score = {}
+    max_place = max(get_places(races))
+    for race in races:
+        for result in race.results:
+            score = compute_score(max_place, result[0])
+            name = result[1]
+            old_score = racer_to_total_score.get(name, 0)
+            racer_to_total_score[name] = score + old_score
+    return racer_to_total_score
+            
+
+def compute_heats_racers_as_rows_and_races_as_columns(racers, races):
+    heats = np.empty([len(racers), len(races)])
+    max_place = max(get_places(races))
+    heats.fill(1 + max_place)
+    for race_index, race in enumerate(races):
+        for place, racer in race.results:
+            racer_index = racers.index(racer)
+            heats[racer_index, race_index] = place
+    return heats
+
+if __name__ == '__main__':
+
+    f = open(sys.argv[1], "r")
+    reg = None
+    title = ""
+    if len(sys.argv) > 2:
+        title = sys.argv[2]
+    if len(sys.argv) > 3:
+        reg = sys.argv[3]
+
+    fis_soup = BeautifulSoup(f)
+    races = parse_fis_soup(fis_soup, reg)
+    if not races:
+        raise RuntimeError("No races parsed, perhaps due to regex")
+
+    races.reverse() # could sort after date instead
+
+    racers = get_racers(races)
+    racer_to_total_score = get_racer_to_total_score(races)
+    total_score_and_racer = [(k, v) for (v, k) in racer_to_total_score.items()]
+
+    total_score_and_racer.sort(reverse=True)
+    sorted_scores, sorted_racers = zip(*total_score_and_racer)
+
+    heats = compute_heats_racers_as_rows_and_races_as_columns(
+        sorted_racers, races)
+    _, ax = plt.subplots()
+    heatmap = ax.pcolor(heats, cmap='YlOrRd_r')
+
+    # place (x + 1) represents not being in the top x
+    min_place = min(get_places(races))
+    max_place = max(get_places(races))
+    # I don't know why I need to add so many extra margin ticks
+    # but it doesn't work without them.
+    places = range(min_place - 1, max_place + 3)
+    cbar = plt.colorbar(heatmap, ticks=[x for x in places])
+    cbar.ax.invert_yaxis() 
+    places_str = [str(x) for x in places[1:-2]]
+    cbar.ax.set_yticklabels(places_str +
+                            ["absent or\nnot top {0}".format(max_place)])
+    cbar.set_label('Place', rotation=270, size=14)
+
+    ax.set_title(title, size=16)
+    ax.set_xlabel("Races", size=14)
+    ax.set_xticks(np.arange(heats.shape[1]) + 0.5)
+    ax.set_ylabel("Racers", size=14)
+    ax.set_yticks(np.arange(heats.shape[0]) + 0.5)
+    ax.invert_yaxis()
+
+    ax.set_xticklabels([r.city + " " + r.type_ + "\n" +
+                        r.date.strftime("%d-%m-%Y") for r in races])
+    sorted_last_names = [p.split()[0] for p in sorted_racers]
+    ax.set_yticklabels(sorted_last_names)
+
+    plt.show()
+
+
